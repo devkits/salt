@@ -526,6 +526,7 @@ class RMQNonBlockingChannelWrapper(RMQWrapperBase):
 
         # see https://www.rabbitmq.com/confirms.html
         channel.confirm_delivery(self._ack_nack_callback)
+        channel.basic_qos(prefetch_count=1)  # PR - FIXME: need a callback here
         self._channels[threading.get_ident()] = channel
 
         if create_topology_ondemand:
@@ -669,6 +670,12 @@ class RMQNonBlockingChannelWrapper(RMQWrapperBase):
                 self.log.debug(
                     "Processed callback for message on queue [%s]", self.queue_name
                 )
+            channel.basic_ack(delivery_tag=method.delivery_tag)
+            self.log.debug(
+                "Acknowledged message on queue [%s] with delivery tag [%s]",
+                self.queue_name,
+                method.delivery_tag,
+            )
 
         if not self._get_channel():
             raise ValueError("_channel must be set")
@@ -677,7 +684,7 @@ class RMQNonBlockingChannelWrapper(RMQWrapperBase):
             self.queue_name,
             callback=_callback_consumer_registered,
             on_message_callback=_on_message_callback_wrapper,
-            auto_ack=True,
+            auto_ack=False,  # stream queues do not support auto-ack=True
         )
 
         self.log.debug("Starting basic_consume on queue [%s]", self.queue_name)
@@ -698,7 +705,7 @@ class RMQNonBlockingChannelWrapper(RMQWrapperBase):
         def _callback_consumer_registered(method):
             future.set_result(method.method.consumer_tag)
 
-        def _on_message_callback(ch, method, properties, body):
+        def _on_message_callback(channel, method, properties, body):
             self.log.debug(
                 "Received reply on queue [%s]: %s. Reply payload properties: %s",
                 reply_queue_name,
@@ -709,6 +716,10 @@ class RMQNonBlockingChannelWrapper(RMQWrapperBase):
             self.log.debug(
                 "Processed callback for reply on queue [%s]", reply_queue_name
             )
+            # channel.basic_ack(delivery_tag=method.delivery_tag)
+            # self.log.debug(
+            #    "Acknowledged reply for reply on queue [%s] with delivery tag [%s]", reply_queue_name, method.delivery_tag
+            # )
 
         self.log.debug("Starting basic_consume reply on queue [%s]", reply_queue_name)
 
@@ -721,7 +732,7 @@ class RMQNonBlockingChannelWrapper(RMQWrapperBase):
                 consumer_tag=consumer_tag,
                 queue=reply_queue_name,
                 on_message_callback=_on_message_callback,
-                auto_ack=True,
+                auto_ack=True,  # reply-to queues only support auto_ack=True
                 callback=_callback_consumer_registered,
             )
         except pika.exceptions.DuplicateConsumerTag:
